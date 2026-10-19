@@ -230,6 +230,22 @@ reindex_kb.py        重建索引（换模型/调切分参数时用）
 embedding_server.py  本地向量服务（fastembed）
 ```
 
+## 验证状态
+
+不是「应该能跑」：用全新 venv 从零安装依赖，把完整链路跑了一遍。
+
+| 验证项 | 结果 |
+|---|---|
+| `pip install -r requirements.txt`（全新 venv） | 通过 |
+| `/api/health` | `db=postgres`、`kbBackend=pgvector`、`checkpoint=postgres` |
+| 知识问答 | 命中 2 个片段（0.69 / 0.64），2.5 秒返回 |
+| 工具调用 | `query_order` 正确返回订单、金额、物流 |
+| 转人工 | 落为 `WAITING_AGENT`，工作台列表可见 |
+| 坐席接管 + 回复 | 访客端收到人工消息，状态变 `AGENT`（checkpoint 恢复成功） |
+| 两阶段写操作 | 提案 → 「确认」→ 创建订单并返回单号 |
+| 自带向量服务 | `/health` 与 `/v1/embeddings` 正常返回 512 维向量 |
+| 静态页面 | `/` 与 `/console` 均 200 |
+
 ## 已知限制
 
 - **单 Agent、单租户**：演示够用，多租户字段已预留（`tenant_id`），但没有做隔离策略。
