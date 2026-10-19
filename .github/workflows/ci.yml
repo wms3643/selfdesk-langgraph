@@ -1,0 +1,56 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Python 语法
+        run: python -m compileall -q app run.py seed_kb.py reindex_kb.py embedding_server.py
+
+      - name: 密钥扫描
+        run: |
+          set -e
+          if grep -rInE "(^|[^A-Za-z0-9])sk-[A-Za-z0-9]{20,}|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY" \
+             --exclude-dir=.git --exclude-dir=docs . ; then
+            echo "::error::发现疑似密钥，请移除"
+            exit 1
+          fi
+          echo "未发现疑似密钥"
+
+      - name: 敏感文件未被跟踪
+        run: |
+          set -e
+          if git ls-files | grep -E "(^|/)(\.env(\.local)?|\.deepseek-key)$"; then
+            echo "::error::敏感文件被提交"
+            exit 1
+          fi
+          echo "工作区干净"
+
+      - name: README 图片引用存在
+        run: |
+          python - <<'PY'
+          import pathlib, re, sys
+          root = pathlib.Path(".")
+          text = (root / "README.md").read_text(encoding="utf-8")
+          refs = re.findall(r"!\[[^\]]*\]\(([^)]+)\)", text)
+          missing = [
+              p for p in refs
+              if not p.startswith(("http://", "https://")) and not (root / p).exists()
+          ]
+          if missing:
+              print("缺少图片:", missing)
+              sys.exit(1)
+          print(f"README 图片检查通过（{len(refs)} 个引用）")
+          PY

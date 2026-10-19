@@ -1,5 +1,7 @@
 # SelfDesk · LangGraph 智能客服编排层
 
+![ci](https://github.com/wms3643/selfdesk-langgraph/actions/workflows/ci.yml/badge.svg)
+
 把客服 AI 从业务系统里剥出来，做成一个**可独立运行的图编排服务**：意图分流 → 检索增强 → 工具调用 → 两阶段写操作 → 转人工挂起/恢复。
 
 不是「套一层 prompt 的聊天框」：每一步都有明确状态、可回放的 checkpoint，以及可查的证据（意图、命中片段、工具调用、延迟、token）。
