@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: selfdesk-pg
+    environment:
+      POSTGRES_DB: selfdesk
+      POSTGRES_USER: selfdesk
+      POSTGRES_PASSWORD: selfdesk_local
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U selfdesk -d selfdesk"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:

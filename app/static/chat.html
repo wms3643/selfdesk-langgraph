@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SelfDesk 在线客服</title>
+<style>
+  :root{
+    --page:#F1F4F3; --surface:#FFFFFF; --surface-2:#F7F9F8;
+    --line:#E3E8E6; --line-soft:#EDF1EF;
+    --ink:#0E1513; --ink-2:#4A5551; --ink-3:#7C8781;
+    --brand:#0E7A68; --brand-2:#0A5F51; --brand-tint:#E7F3F0; --brand-ring:rgba(14,122,104,.14);
+    --violet:#6D5AE6; --violet-tint:#F0EDFE;
+    --amber:#B54708; --amber-tint:#FDF3DF;
+    --red:#B42318; --red-tint:#FCECEA;
+    --r-sm:9px; --r-md:12px; --r-lg:16px; --r-xl:22px;
+    --shadow-sm:0 1px 2px rgba(14,21,19,.05);
+    --shadow-lg:0 30px 70px -34px rgba(14,21,19,.28), 0 2px 8px rgba(14,21,19,.04);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{
+    background:var(--page); color:var(--ink);
+    font-family:"Inter","Segoe UI",system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:14px; -webkit-font-smoothing:antialiased;
+    display:flex; align-items:center; justify-content:center; padding:20px;
+  }
+  .app{
+    width:100%; max-width:780px; height:100%; max-height:940px;
+    background:var(--surface); border:1px solid var(--line); border-radius:var(--r-xl);
+    box-shadow:var(--shadow-lg); display:grid; grid-template-rows:auto 1fr auto; overflow:hidden;
+  }
+
+  /* header */
+  .chat-head{display:flex; align-items:center; gap:12px; padding:14px 20px; border-bottom:1px solid var(--line-soft)}
+  .mark{width:38px; height:38px; border-radius:12px; background:var(--brand); display:grid; place-items:center; flex:0 0 38px; box-shadow:var(--shadow-sm)}
+  .ident{min-width:0}
+  .ident .name{font-size:14.5px; font-weight:500; letter-spacing:-.01em}
+  .state{display:flex; align-items:center; gap:6px; font-size:12px; color:var(--ink-3); margin-top:3px}
+  .dot{width:6px; height:6px; border-radius:50%; background:var(--brand); box-shadow:0 0 0 3px rgba(14,122,104,.12)}
+  .dot.wait{background:#D97706; box-shadow:0 0 0 3px rgba(217,119,6,.14)}
+  .dot.human{background:var(--violet); box-shadow:0 0 0 3px rgba(109,90,230,.14)}
+  .dot.closed{background:var(--ink-3); box-shadow:none}
+  .head-link{margin-left:auto; font-size:12px; color:var(--ink-3); text-decoration:none; padding:6px 10px; border-radius:8px; transition:.15s}
+  .head-link:hover{color:var(--brand); background:var(--brand-tint)}
+
+  /* thread */
+  #list{overflow-y:auto; padding:22px 20px 12px; display:flex; flex-direction:column; gap:16px; scroll-behavior:smooth}
+  #list::-webkit-scrollbar{width:8px}
+  #list::-webkit-scrollbar-thumb{background:#DDE3E0; border-radius:8px; border:2px solid var(--surface)}
+  .thread-spacer{flex:1 0 auto; min-height:0}
+
+  .welcome{padding:6px 2px 10px; margin:auto 0}
+  .welcome .eyebrow{display:inline-flex; align-items:center; gap:6px; font-size:11.5px; color:var(--brand-2);
+    background:var(--brand-tint); padding:4px 9px; border-radius:999px; margin-bottom:14px}
+  .welcome h1{font-size:20px; line-height:1.4; font-weight:500; margin:0 0 8px; letter-spacing:-.02em}
+  .welcome p{font-size:13px; line-height:1.7; color:var(--ink-2); margin:0 0 18px; max-width:44ch}
+  .suggest{display:grid; grid-template-columns:1fr 1fr; gap:8px}
+  .suggest button{
+    display:flex; align-items:center; gap:10px; text-align:left; cursor:pointer;
+    font:inherit; font-size:12.5px; color:var(--ink-2); background:var(--surface);
+    border:1px solid var(--line); border-radius:var(--r-md); padding:11px 12px; transition:.15s;
+  }
+  .suggest button:hover{border-color:var(--brand); background:var(--brand-tint); color:var(--brand-2)}
+  .s-ico{width:26px; height:26px; border-radius:8px; background:var(--surface-2); display:grid; place-items:center;
+    flex:0 0 26px; color:var(--ink-3)}
+  .suggest button:hover .s-ico{background:#fff; color:var(--brand)}
+  .suggest em{margin-left:auto; font-style:normal; color:var(--ink-4); font-size:12px}
+
+  .row{display:flex; gap:10px; max-width:82%; align-items:flex-start}
+  .row.me{align-self:flex-end; flex-direction:row-reverse}
+  .avatar{width:28px; height:28px; border-radius:var(--r-sm); flex:0 0 28px; display:grid; place-items:center;
+    font-size:11px; font-weight:500; background:#EAEEEC; color:var(--ink-2)}
+  .row.bot .avatar{background:var(--brand-tint); color:var(--brand-2)}
+  .row.human .avatar{background:var(--violet-tint); color:#4B3BB5}
+  .stack{min-width:0}
+  .bubble{
+    background:var(--surface); border:1px solid var(--line); border-radius:14px 14px 14px 4px;
+    padding:10px 13px; line-height:1.68; white-space:pre-wrap; word-break:break-word;
+    font-size:14px; box-shadow:var(--shadow-sm);
+  }
+  .row.me .bubble{background:var(--brand); border-color:var(--brand); color:#fff; border-radius:14px 14px 4px 14px}
+  .row.human .bubble{border-radius:14px 14px 14px 4px}
+  .meta{display:flex; flex-wrap:wrap; gap:6px; align-items:center; font-size:11px; color:var(--ink-3); margin-top:6px}
+  .meta .tag{background:var(--surface-2); border:1px solid var(--line-soft); border-radius:6px; padding:1px 6px; color:var(--ink-3)}
+  .row.me .meta{justify-content:flex-end}
+
+  .notice{align-self:center; max-width:88%; text-align:center; font-size:12px; line-height:1.6; color:var(--ink-2);
+    background:var(--surface-2); border:1px solid var(--line-soft); border-radius:999px; padding:6px 14px}
+  .notice.warn{color:var(--amber); background:var(--amber-tint); border-color:#F2DFBE}
+
+  .typing{display:inline-flex; gap:3px; align-items:center; height:14px}
+  .typing i{width:5px; height:5px; border-radius:50%; background:var(--ink-3); animation:b 1.2s infinite}
+  .typing i:nth-child(2){animation-delay:.2s}
+  .typing i:nth-child(3){animation-delay:.4s}
+  @keyframes b{0%,60%,100%{opacity:.3; transform:translateY(0)}30%{opacity:1; transform:translateY(-3px)}}
+
+  /* composer */
+  footer{padding:14px 20px 16px; border-top:1px solid var(--line-soft); background:var(--surface)}
+  .composer{display:flex; gap:10px; align-items:flex-end}
+  textarea{
+    flex:1; resize:none; font:inherit; font-size:14px; line-height:1.55; padding:11px 14px;
+    border:1px solid transparent; border-radius:var(--r-md); outline:none; background:var(--surface-2);
+    min-height:46px; max-height:132px; color:var(--ink); transition:.15s;
+  }
+  textarea::placeholder{color:var(--ink-3)}
+  textarea:focus{background:var(--surface); border-color:var(--brand); box-shadow:0 0 0 3px var(--brand-ring)}
+  textarea:disabled{opacity:.55}
+  #send{
+    width:46px; height:46px; flex:0 0 46px; border:0; border-radius:50%; background:var(--brand); color:#fff;
+    display:grid; place-items:center; cursor:pointer; transition:.15s;
+  }
+  #send:hover{background:var(--brand-2); transform:translateY(-1px)}
+  #send:disabled{opacity:.4; cursor:not-allowed; transform:none}
+  .fine{display:flex; justify-content:space-between; gap:12px; margin-top:10px; font-size:11px; color:var(--ink-3)}
+  .fine kbd{font-family:inherit; background:var(--surface-2); border:1px solid var(--line); border-radius:4px; padding:0 4px; font-size:10.5px}
+
+  @media (max-width:640px){
+    body{padding:0}
+    .app{height:100%; max-height:none; border:0; border-radius:0; box-shadow:none}
+    .suggest{grid-template-columns:1fr}
+    .row{max-width:90%}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="chat-head">
+    <div class="mark">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true">
+        <path d="M4.6 7.2A3.6 3.6 0 0 1 8.2 3.6h7.6a3.6 3.6 0 0 1 3.6 3.6v4.6a3.6 3.6 0 0 1-3.6 3.6h-3.9l-4.1 3.3v-3.4A3.6 3.6 0 0 1 4.6 11.8V7.2Z" fill="#fff"/>
+        <circle cx="9.1" cy="9.4" r="1.05" fill="#0E7A68"/>
+        <circle cx="12" cy="9.4" r="1.05" fill="#0E7A68"/>
+        <circle cx="14.9" cy="9.4" r="1.05" fill="#0E7A68"/>
+      </svg>
+    </div>
+    <div class="ident">
+      <div class="name">SelfDesk 智能助手</div>
+      <div class="state"><span class="dot" id="statusDot"></span><span id="statusText">正在连接…</span></div>
+    </div>
+    <a class="head-link" href="/console" target="_blank" rel="noopener">AI 工作台 →</a>
+  </header>
+
+  <div id="list"></div>
+
+  <footer>
+    <div class="composer">
+      <textarea id="input" rows="1" placeholder="描述你的问题，Enter 发送"></textarea>
+      <button id="send" aria-label="发送">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" aria-hidden="true">
+          <path d="M5 12h13M12.5 6.2 18.8 12l-6.3 5.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
+    <div class="fine">
+      <span>回答由 AI 生成，重要信息请与人工客服确认</span>
+      <span><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
+    </div>
+  </footer>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const listEl = $("list"), inputEl = $("input"), sendEl = $("send");
+let sid = localStorage.getItem("sd_sid") || null;
+let lastId = 0, timer = null, busy = false, welcomed = false;
+
+const STATUS = {
+  BOT:        { text: "AI 接待中", cls: "" },
+  WAITING_AGENT: { text: "正在为你转接人工…", cls: "wait" },
+  AGENT:      { text: "人工客服已接入", cls: "human" },
+  CLOSED:     { text: "会话已结束", cls: "closed" }
+};
+
+const ICONS = {
+  refund: '<path d="M5 4h9l4 4v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z"/><path d="M14 4v4h4"/><path d="M12 11.5v5M9.8 14.3 12 16.5l2.2-2.2"/>',
+  invoice: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3Z"/><path d="M9 8h6M9 12h6"/>',
+  order: '<path d="M12 3.5 4.5 7.2v9.6L12 20.5l7.5-3.7V7.2L12 3.5Z"/><path d="M4.5 7.2 12 11l7.5-3.8M12 11v9.5"/>',
+  human: '<path d="M4.5 13a7.5 7.5 0 0 1 15 0"/><rect x="3" y="13" width="4" height="6.2" rx="1.6"/><rect x="17" y="13" width="4" height="6.2" rx="1.6"/>'
+};
+
+const SUGGESTIONS = [
+  ["refund", "退款政策", "你们的退款政策是怎么规定的？"],
+  ["invoice", "开发票", "发票能开专票吗？"],
+  ["order", "查订单", "帮我查一下订单 202610190001 到哪了"],
+  ["human", "转人工", "我要转人工"]
+];
+
+function esc(s){ return String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function fmtClock(s){ return (s || "").slice(11, 16); }
+
+function setStatus(status){
+  const cfg = STATUS[status] || STATUS.BOT;
+  $("statusDot").className = "dot " + cfg.cls;
+  $("statusText").textContent = cfg.text;
+  const closed = status === "CLOSED";
+  sendEl.disabled = closed; inputEl.disabled = closed;
+  inputEl.placeholder = closed ? "会话已结束，刷新页面可重新开始" : "描述你的问题，Enter 发送";
+}
+
+function renderWelcome(){
+  if (welcomed) return;
+  welcomed = true;
+  const el = document.createElement("div");
+  el.className = "welcome";
+  el.innerHTML = `<div class="eyebrow">在线 · 通常 3 秒内回复</div>
+    <h1>你好，我是 SelfDesk 智能助手</h1>
+    <p>可以问我产品与套餐、退款与发票、订单进度。复杂问题我会帮你转接人工，历史记录不会丢。</p>
+    <div class="suggest">${SUGGESTIONS.map(([key, label, q]) =>
+      `<button data-q="${esc(q)}"><span class="s-ico">
+         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6"
+              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[key]}</svg>
+       </span>${label}<em>→</em></button>`).join("")}</div>`;
+  listEl.appendChild(el);
+  el.querySelectorAll("button[data-q]").forEach(b => {
+    b.addEventListener("click", () => { inputEl.value = b.dataset.q; send(); });
+  });
+}
+
+function addMessage(m, opts = {}){
+  const role = m.role;
+  const isMe = role === "visitor";
+  const who = isMe ? "我" : (m.source === "human" ? "人" : "AI");
+  const cls = isMe ? "me" : (m.source === "human" ? "human" : "bot");
+  const row = document.createElement("div");
+  row.className = "row " + cls;
+  let meta = "";
+  if (!isMe && !opts.plain) {
+    const parts = [];
+    if (fmtClock(m.created_at)) parts.push(`<span>${fmtClock(m.created_at)}</span>`);
+    if (m.source) parts.push(`<span class="tag">${esc(m.source === "human" ? "人工" : m.source)}</span>`);
+    if (m.latency_ms) parts.push(`<span>${m.latency_ms}ms</span>`);
+    if (m.tokens) parts.push(`<span>${m.tokens} tokens</span>`);
+    if (parts.length) meta = `<div class="meta">${parts.join("")}</div>`;
+  }
+  row.innerHTML = `<div class="avatar">${who}</div>
+    <div class="stack"><div class="bubble">${esc(m.content)}</div>${meta}</div>`;
+  listEl.appendChild(row);
+  scrollBottom();
+}
+
+function addNotice(text, warn){
+  const el = document.createElement("div");
+  el.className = "notice" + (warn ? " warn" : "");
+  el.textContent = text;
+  listEl.appendChild(el);
+  scrollBottom();
+}
+
+function scrollBottom(){ listEl.scrollTop = listEl.scrollHeight; }
+
+function typing(on){
+  let el = $("__typing");
+  if (on && !el) {
+    el = document.createElement("div");
+    el.id = "__typing";
+    el.className = "row bot";
+    el.innerHTML = `<div class="avatar">AI</div><div class="stack"><div class="bubble">
+      <span class="typing"><i></i><i></i><i></i></span></div></div>`;
+    listEl.appendChild(el);
+    scrollBottom();
+  } else if (!on && el) {
+    el.remove();
+  }
+}
+
+async function api(path, body){
+  const res = await fetch(path, {
+    method: body ? "POST" : "GET",
+    headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
+  return data;
+}
+
+async function ensureSession(force){
+  if (sid && !force) return sid;
+  const s = await api("/api/sessions", { visitor_name: "网页访客" });
+  sid = s.id;
+  localStorage.setItem("sd_sid", sid);
+  return sid;
+}
+
+async function loadHistory(){
+  try {
+    const data = await api(`/api/sessions/${sid}`);
+    listEl.innerHTML = "";
+    lastId = 0;
+    welcomed = false;
+    if (!data.messages.length) {
+      renderWelcome();
+    } else {
+      // 消息少时贴底显示，避免上方一大片空白
+      const sp = document.createElement("div");
+      sp.className = "thread-spacer";
+      listEl.appendChild(sp);
+    }
+    data.messages.forEach(m => { addMessage(m); lastId = m.id; });
+    setStatus(data.session.status);
+  } catch (e) {
+    localStorage.removeItem("sd_sid");
+    sid = null;
+    await ensureSession(true);
+    listEl.innerHTML = "";
+    welcomed = false;
+    renderWelcome();
+  }
+}
+
+async function poll(){
+  if (!sid || busy) return;
+  try {
+    const data = await api(`/api/sessions/${sid}`);
+    data.messages.filter(m => m.id > lastId).forEach(m => {
+      if (m.role === "assistant") { typing(false); }
+      addMessage(m);
+      lastId = m.id;
+    });
+    setStatus(data.session.status);
+  } catch (e) { /* 轮询失败静默重试，避免刷屏 */ }
+}
+
+async function send(){
+  const text = inputEl.value.trim();
+  if (!text || busy) return;
+  busy = true;
+  sendEl.disabled = true;
+  inputEl.value = "";
+  inputEl.style.height = "auto";
+
+  const welcome = listEl.querySelector(".welcome");
+  if (welcome) welcome.remove();
+
+  addMessage({ role: "visitor", content: text, id: 0 }, { plain: true });
+  typing(true);
+
+  try {
+    const r = await api("/api/chat", { session_id: sid, message: text });
+    typing(false);
+    if (r.mode === "human") {
+      addNotice(r.waiting ? "已转人工，正在等待客服接入…" : "人工客服正在处理，请稍候");
+    } else if (r.answer) {
+      addMessage({ role: "assistant", content: r.answer, source: r.intent,
+                   latency_ms: r.latency_ms, tokens: r.tokens });
+      lastId = 999999;
+      if (r.need_human) {
+        addNotice("这个问题的答案我无法确认，已为你转接人工：" + (r.human_reason || "需要人工核实"), true);
+      }
+    } else if (r.error) {
+      addNotice("服务暂时不可用：" + r.error, true);
+    }
+    await loadHistory();
+  } catch (e) {
+    typing(false);
+    addNotice("发送失败：" + e.message, true);
+  } finally {
+    busy = false;
+    sendEl.disabled = false;
+    inputEl.focus();
+  }
+}
+
+sendEl.addEventListener("click", send);
+inputEl.addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+});
+inputEl.addEventListener("input", () => {
+  inputEl.style.height = "auto";
+  inputEl.style.height = Math.min(132, inputEl.scrollHeight) + "px";
+});
+
+(async function init(){
+  // 复用 localStorage 里的会话：刷新页面不应该丢掉历史。
+  // 会话失效时 loadHistory 会捕获 404 并自动新建。
+  await ensureSession();
+  await loadHistory();
+  timer = setInterval(poll, 3000);
+  inputEl.focus();
+})();
+</script>
+</body>
+</html>
