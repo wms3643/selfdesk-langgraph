@@ -11,6 +11,20 @@ Not a prompt wrapper. Every step has explicit state, replayable checkpoints, and
 
 ![playground](docs/screenshots/visitor.png)
 
+## Two versions
+
+Same product, two AI implementations. Entry point, pages and business logic stay the same — only the AI engine changes.
+
+| | A · all Java | B · dual language (this repo) |
+|---|---|---|
+| Business | bytedesk (Spring Boot) | same, untouched |
+| AI | Spring AI + DeepSeek | Python + LangGraph |
+| Processes | 1 (:9003) | 2 (:9003 business + :8003 AI) |
+| Visitor entry | `:9003/chat/` | **same** `:9003/chat/`, AI calls forwarded to 8003 |
+
+Switch by changing one env var (`SPRING_AI_DEEPSEEK_BASE_URL`) — no business code changes.
+See [selfdesk-springai](https://github.com/wms3643/selfdesk-springai) for the Java side.
+
 ## Why it is interesting
 
 | Typical approach | Here |

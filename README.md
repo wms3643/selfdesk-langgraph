@@ -22,6 +22,7 @@
 
 ## 目录
 
+- [两个版本](#两个版本本仓库是版本-b-的-ai-层)
 - [先明确：它是接进去，不是换掉](#先明确它是接进去不是换掉)
 - [为什么单独部署](#为什么单独部署而不是写进业务代码)
 - [为什么值得看](#为什么值得看)
@@ -48,6 +49,26 @@
 | 转人工 = 前端弹个提示 | `interrupt` 真挂起，状态写进 checkpoint，进程重启也不丢 |
 | 向量库、业务库、会话状态三套存储 | 全部放 PostgreSQL：业务表 + pgvector + checkpoint 同库 |
 | 换语言重写就接不进业务 | 提供 OpenAI 兼容 `/v1/chat/completions`，Java Spring AI 改个 base-url 即可接入 |
+
+## 两个版本（本仓库是版本 B 的 AI 层）
+
+同一套客服产品，两种 AI 实现。**入口、页面、业务逻辑都一样，换的是 AI 引擎。**
+
+| | 版本 A · 全 Java | 版本 B · 双语言 |
+|---|---|---|
+| 业务系统 | bytedesk（Java / Spring Boot） | 同一套，不改 |
+| AI 实现 | Spring AI + DeepSeek | Python + LangGraph 编排 |
+| 进程数 | 1 个（:9003） | 2 个（:9003 业务 + :8003 AI） |
+| 会话与状态 | 全在 H2 | 业务在 H2，AI 状态在 PostgreSQL |
+| 访客入口 | `:9003/chat/` | **同一个** `:9003/chat/`，AI 请求转给 8003 |
+| 代码仓库 | [selfdesk-springai](https://github.com/wms3643/selfdesk-springai) | 本仓库（AI 层）+ selfdesk-springai（业务） |
+
+版本之间切换只改一个环境变量（`SPRING_AI_DEEPSEEK_BASE_URL`），业务代码零改动：
+
+```
+.\scripts\ai-gateway.ps1 on -Restart     # A → B
+.\scripts\ai-gateway.ps1 off -Restart    # B → A
+```
 
 ## 先明确：它是接进去，不是换掉
 
