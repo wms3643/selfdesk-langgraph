@@ -2,12 +2,14 @@
 
 ![ci](https://github.com/wms3643/selfdesk-langgraph/actions/workflows/ci.yml/badge.svg)
 
-A standalone graph-orchestrated AI layer for customer service:
+An AI orchestration service that plugs **behind** your existing customer-service system — it does not replace your UI:
 **intent routing → retrieval → tool calls → two-phase writes → human handoff that actually suspends.**
 
 Not a prompt wrapper. Every step has explicit state, replayable checkpoints, and evidence you can query afterwards (intent, matched chunks, tool used, latency, tokens).
 
-![visitor](docs/screenshots/visitor.png)
+*Playground for verifying the pipeline — not the production entry point.*
+
+![playground](docs/screenshots/visitor.png)
 
 ## Why it is interesting
 
