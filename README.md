@@ -163,6 +163,9 @@ call  = resp.tool_calls[0]        # {"name": "query_order", "args": {"order_no":
 | 模型调不存在的工具 | 工具名不在 `TOOL_REGISTRY` → 直接降级为知识问答 |
 | 模型超时/报错 | 退回关键词规则（`decision_source=fallback`），服务不中断 |
 
+**两级里还有一层省钱快路**：句子里带订单号、动作又明确（查物流 / 申请退款）时，规则直接定，
+不花模型调用。实测这类请求 **0 token、0 ms**，占日常客服流量的一大半。
+
 **实测（同一批句子，脚本 `scripts/eval_decision.py`）**
 
 | 指标 | 关键词规则 | 决策模型 |
@@ -173,7 +176,11 @@ call  = resp.tool_calls[0]        # {"name": "query_order", "args": {"order_no":
 
 规则那 92% 是"我按这些句子调的"，模型 100% 也含少量拟合成分；**留出集 88% 才是可信数字**。
 规则漏掉的典型是「帮我查下 202610190002 付了多少钱」→ 规则返回知识库，模型正确选 `query_order`。
-代价是每轮多一次模型调用，中位 +0.8 秒。要退回纯规则：`SELFDESK_DECISION=rules`。
+代价是没命中快路时多一次模型调用：瘦身前 1148 input token / 中位 833ms，瘦身后 **817 token / 中位 690ms**。
+按 DeepSeek 官方价（输入 ¥1/百万、输出 ¥4/百万，闲时）折算，一次决策约 **¥0.001**，1000 次约 1 元——
+真正的成本是延迟，不是 token。
+
+要退回纯规则：`SELFDESK_DECISION=rules`；关掉快路：`SELFDESK_FASTPATH=0`。
 
 ### 2. 参数在流程入口校验，不带病执行
 
@@ -309,6 +316,10 @@ python run.py                       # 主服务 :8003
 | `LLM_MODEL` | `deepseek-chat` | 模型名 |
 | `LLM_TEMPERATURE` | `0.3` | 生成温度 |
 | `SELFDESK_DECISION` | `model` | `model` 用决策模型分诊；`rules` 退回关键词 |
+| `SELFDESK_FASTPATH` | `1` | `0` 关闭「带单号的高置信快路」 |
+| `SELFDESK_DECISION_MODEL` | 同 `LLM_MODEL` | 决策单独指定模型（比如换更便宜的 flash 级） |
+| `SELFDESK_DECISION_BASE_URL` | 同 `LLM_BASE_URL` | 决策走另一家服务商 |
+| `SELFDESK_DECISION_API_KEY` | 同 `DEEPSEEK_API_KEY` | 决策单独用另一个 key |
 | `SELFDESK_ARG_VALIDATE` | `1` | `0` 关闭参数入口校验 |
 | `SELFDESK_PG_DSN` | `host=127.0.0.1 port=5432 dbname=selfdesk user=selfdesk password=selfdesk_local` | 整体覆盖连接串 |
 | `EMBEDDING_URL` | `http://127.0.0.1:8000/v1/embeddings` | 向量服务 |
@@ -392,14 +403,14 @@ scripts/eval_decision.py  决策模型 vs 关键词规则的对照实验
 | 静态页面 | `/` 与 `/console` 均 200 |
 | 参数校验（实机） | 缺单号追问、带单号查询、退款提案、确认执行、重复退款短路，5 条全通 |
 | 决策模型（实机） | 24 句常见问法 24/24；留出集 8 句 7/8；中位 842ms |
-| 单元测试 | 69 passed + 3 db skipped（`pytest`） |
+| 单元测试 | 73 passed + 3 db skipped（`pytest`） |
 | CI | GitHub Actions：测试 + 密钥扫描 + 敏感文件检查 |
 
 ## 测试
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                     # 72 个用例，约 0.7 秒，不依赖外部服务
+pytest                     # 76 个用例，约 0.7 秒，不依赖外部服务
 pytest -m db               # 两阶段幂等（需要 SELFDESK_TEST_DSN 指向一个测试库）
 ```
 
@@ -410,14 +421,15 @@ pytest -m db               # 两阶段幂等（需要 SELFDESK_TEST_DSN 指向�
 | `tests/test_routing.py` | 意图路由（查单/退款/下单/政策问题不误触）、单号提取边界 |
 | `tests/test_two_phase_db.py` | 同一提案确认两次只落一单；待确认动作流转与过期 |
 | `tests/test_validate.py` | 参数可溯源（含分隔符/短值）、模型参数被篡改时拦下、两个前缀节点的分支与短路 |
-| `tests/test_router.py` | 漏斗短路（不花模型调用）、tool_call 解析、未知工具降级、模型报错退回规则、编造参数被 `v_order` 拦下 |
+| `tests/test_router.py` | 漏斗短路、tool_call 解析、未知工具降级、模型报错退回规则、编造参数被 `v_order` 拦下、快路命中/关闭 |
 
 CI 里还会额外跑：脚本语法、密钥扫描、敏感文件、README 图片引用。
 
 ## 已知限制
 
 - **单 Agent、单租户**：演示够用，多租户字段已预留（`tenant_id`），但没有做隔离策略。
-- **决策要花一次模型调用**：中位 +0.8 秒，最慢 1.6 秒；对延迟敏感的入口可切 `SELFDESK_DECISION=rules`。
+- **决策要花一次模型调用**：没命中快路时中位 ~0.7 秒；对延迟极敏感的入口可切 `SELFDESK_DECISION=rules`。
+- **快路只覆盖「带订单号」的句子**：没有单号时仍走模型（避免把「退款多久到账」误判成退款动作）。
 - **提示词里有 few-shot 示例**：那几句的准确率会被抬高（24 句 100%），真实水平看留出集（88%）。
 - **写操作的单号会回看最近 4 轮对话**：用户接着说「退了吧」会沿用上一轮提到的单号，确认提示里会显示具体订单号，由确认这一步兜底；不想沿用可关掉 `v_refund` 的上下文回退。
 - **只支持 `.md/.txt` 导入**：docx/pdf 需要额外解析，尚未实现。

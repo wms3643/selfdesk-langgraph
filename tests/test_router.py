@@ -37,6 +37,7 @@ def use(monkeypatch, resp=None, exc=None) -> FakeLLM:
     fake = FakeLLM(resp=resp, exc=exc)
     monkeypatch.setattr(router, "_llm", lambda: fake)
     monkeypatch.delenv("SELFDESK_DECISION", raising=False)
+    monkeypatch.setenv("SELFDESK_FASTPATH", "0")   # 这些用例专门测模型
     return fake
 
 
@@ -139,3 +140,35 @@ def test_classify_rules_mode(monkeypatch):
 def test_tool_schemas_cover_registry():
     names = {s["function"]["name"] for s in router.tool_schemas()}
     assert names == set(router.tools.TOOL_REGISTRY)
+
+# ── 高置信快路：带单号时不花模型调用 ─────────────────────
+def test_fastpath_query_with_order_no(monkeypatch):
+    fake = use(monkeypatch)
+    monkeypatch.delenv("SELFDESK_FASTPATH", raising=False)
+    out = router.decide(f"订单 {ORDER} 到哪了")
+    assert out["decision_source"] == "fastpath"
+    assert out["tool_name"] == "query_order"
+    assert out["tool_args_raw"] == {"order_no": ORDER}
+    assert fake.calls == 0
+
+
+def test_fastpath_refund_with_order_no(monkeypatch):
+    fake = use(monkeypatch)
+    monkeypatch.delenv("SELFDESK_FASTPATH", raising=False)
+    out = router.decide(f"申请退款 {ORDER}")
+    assert out["tool_name"] == "submit_refund"
+    assert fake.calls == 0
+
+
+def test_fastpath_skips_when_no_order_no(monkeypatch):
+    use(monkeypatch, FakeResp(tool_calls=[{"name": "query_order", "args": {}}]))
+    monkeypatch.delenv("SELFDESK_FASTPATH", raising=False)
+    out = router.decide("我的快递到哪了")
+    assert out["decision_source"] == "model"
+
+
+def test_fastpath_can_be_disabled(monkeypatch):
+    use(monkeypatch, FakeResp(tool_calls=[{"name": "query_order",
+                                           "args": {"order_no": ORDER}}]))
+    out = router.decide(f"订单 {ORDER} 到哪了")
+    assert out["decision_source"] == "model"

@@ -1,13 +1,16 @@
-"""决策模型 vs 关键词规则：同一批句子跑对照，看选工具准确率与延迟。
+"""决策模型选型：同一批句子跑对照，输出命中率与延迟。
 
 用法：
-    python scripts/eval_decision.py
+    set LLM_MODEL=deepseek-flash  && python scripts/eval_decision.py
+    set LLM_MODEL=deepseek-v4-pro && python scripts/eval_decision.py
 
-不需要数据库，只调模型与规则，输出一张对照表 + 汇总。
-成本：约 24 次短调用，可反复跑。
+分两组：
+- 常见集（24 句）：提示词里给过类似示例，会偏高，用来看"能不能覆盖日常说法"
+- 留出集（8 句）：没进过提示词，用来判断真实泛化
 """
 from __future__ import annotations
 
+import os
 import statistics
 import sys
 import time
@@ -20,7 +23,6 @@ from app import router, tools  # noqa: E402
 
 HUMAN_WORDS = ("人工", "转人工", "客服人员", "真人", "投诉", "经理")
 
-# (句子, 可接受的工具集合；kb=知识问答，human=转人工)
 CASES: list[tuple[str, set[str]]] = [
     ("订单 202610190001 到哪了", {"query_order"}),
     ("我的快递到哪了", {"query_order"}),
@@ -48,6 +50,17 @@ CASES: list[tuple[str, set[str]]] = [
     ("帮我查下 202610190002 付了多少钱", {"query_order"}),
 ]
 
+HELDOUT: list[tuple[str, set[str]]] = [
+    ("快递到哪儿了", {"query_order"}),
+    ("202610190001 什么时候发货", {"query_order"}),
+    ("上次那个工单有结果了吗", {"query_ticket"}),
+    ("你们的服务时间到几点", {"business_info"}),
+    ("我要开专用发票", {"kb", "create_ticket"}),
+    ("帮我开一个专业版的账户", {"create_order"}),
+    ("我想把订单 202610180003 退掉", {"submit_refund"}),
+    ("人工客服", {"human"}),
+]
+
 
 def by_rules(text: str) -> str:
     if any(w in text for w in HUMAN_WORDS):
@@ -58,34 +71,33 @@ def by_rules(text: str) -> str:
 def by_model(text: str) -> tuple[str, int]:
     started = time.perf_counter()
     out = router.decide(text)
-    ms = int((time.perf_counter() - started) * 1000)
-    return out.get("tool_name") or out["intent"], ms
+    return out.get("tool_name") or out["intent"], int((time.perf_counter() - started) * 1000)
+
+
+def run(name: str, cases: list[tuple[str, set[str]]], detail: bool) -> tuple[int, list[int]]:
+    ok, ms_all = 0, []
+    if detail:
+        print(f"{'句子':<34}{'期望':<26}{'规则':<16}{'模型':<16}{'ms':>6}")
+        print("-" * 100)
+    for text, expect in cases:
+        rule = by_rules(text)
+        model, ms = by_model(text)
+        ms_all.append(ms)
+        hit = model in expect
+        ok += hit
+        if detail:
+            flag = "" if hit else "  <- 错"
+            print(f"{text:<34}{'/'.join(sorted(expect)):<26}{rule:<16}{model:<16}{ms:>6}{flag}")
+    n = len(cases)
+    print(f"{name}: 模型 {ok}/{n} ({ok / n:.0%})   延迟 中位 {statistics.median(ms_all):.0f}ms / 最大 {max(ms_all)}ms")
+    return ok, ms_all
 
 
 def main() -> None:
-    rows = []
-    rule_ok = model_ok = 0
-    model_ms: list[int] = []
-
-    print(f"{'句子':<34}{'期望':<18}{'规则':<16}{'模型':<16}{'ms':>5}")
-    print("-" * 92)
-    for text, expect in CASES:
-        rule = by_rules(text)
-        model, ms = by_model(text)
-        model_ms.append(ms)
-        r_hit = rule in expect
-        m_hit = model in expect
-        rule_ok += r_hit
-        model_ok += m_hit
-        exp = "/".join(sorted(expect))
-        print(f"{text:<34}{exp:<18}{rule:<16}{model:<16}{ms:>5}"
-              f"{'' if m_hit else '  <- 错'}")
-
-    n = len(CASES)
-    print("-" * 92)
-    print(f"规则命中 {rule_ok}/{n} ({rule_ok / n:.0%})   "
-          f"模型命中 {model_ok}/{n} ({model_ok / n:.0%})   "
-          f"模型延迟 中位 {statistics.median(model_ms):.0f}ms / 最大 {max(model_ms)}ms")
+    print(f"模型: {os.environ.get('LLM_MODEL') or '(默认)'}\n")
+    run("常见集", CASES, detail=False)
+    print()
+    run("留出集", HELDOUT, detail=True)
 
 
 if __name__ == "__main__":
