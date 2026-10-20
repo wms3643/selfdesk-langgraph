@@ -34,3 +34,18 @@ def test_secret_change_invalidates(monkeypatch):
     monkeypatch.setattr(auth, "_SECRET", "another-secret")
     assert auth.parse_token(token) is None
 
+def test_many_roundtrips():
+    """回归：签名是随机字节，可能包含 '.'。
+
+    早期实现用 rsplit(b".") 解析，约 12.5% 的令牌会被切错；
+    批量签发再解析可以稳定复现这一类问题。
+    """
+    for i in range(300):
+        username = f"agent{i}@selfdesk.local"
+        assert auth.parse_token(auth.issue_token(username)) == username
+
+
+def test_signature_of_fixed_length_assumed():
+    token = auth.issue_token("agent@selfdesk.local")
+    raw = __import__("base64").urlsafe_b64decode(token.encode())
+    assert len(raw) > auth.SIG_LEN
