@@ -124,6 +124,7 @@ curl http://127.0.0.1:8003/v1/chat/completions   -H "Authorization: Bearer any" 
         │                                                │
         │   LangGraph 状态图                              │
         │   ├─ classify   知识 / 业务 / 人工              │
+        │   ├─ v_*        参数入口校验（单号/可退状态）    │
         │   ├─ retrieve   pgvector 检索（bge-small-zh）   │
         │   ├─ tool       8 个业务工具，写操作走两阶段     │
         │   ├─ handoff    interrupt 挂起，等坐席 resume   │
@@ -147,7 +148,33 @@ curl http://127.0.0.1:8003/v1/chat/completions   -H "Authorization: Bearer any" 
 
 好处是可测试、可预测：同一句话永远走同一条路径，不会今天答 A 明天答 B。
 
-### 2. 两阶段写操作
+### 2. 参数在流程入口校验，不带病执行
+
+需要参数的流程（查单、退款）在进业务前先过自己的前缀节点 `v_order` / `v_refund`：
+
+```
+classify ──biz──► v_order ──ok──► call_tool ──► answer
+                     └──fail──────────────────► answer（引导用户补参数）
+```
+
+**节点分开，规则共享。** 每个 `v_*` 只写自己特有的判断，三条通用规则
+（参数齐全、可在原话/上下文中溯源、错误结构统一）都调 `app/validate.py`，避免同一条安全规则在 N 处各写一遍。
+
+**为什么参数要溯源。** 现在参数由正则从用户原话里抄，天然可信；一旦换成模型抽取（function calling），
+模型可能编出一个不存在的单号。校验层把"参数必须能在原文里找到"变成硬约束，两种抽取方式共用。
+
+错误码约定（`decide` 依赖它区分追问还是转人工）：
+
+| 错误码 | 含义 | 后续动作 |
+|---|---|---|
+| `missing_arg` | 缺参数 | 追问，不转人工 |
+| `not_grounded` | 参数不在原话里 | 复述确认 |
+| `not_found` | 查了但没有 | 转人工 |
+| `forbidden` | 越权访问 | 转人工 + 审计 |
+
+开关：`SELFDESK_ARG_VALIDATE=0` 退回旧路径（classify 直接进 `call_tool`）。
+
+### 3. 两阶段写操作
 
 模型不能直接动数据。下单/退款/建工单都是：
 
@@ -160,18 +187,18 @@ AI：  已创建订单 2026xxxx（幂等键 pi_xxx，重复确认不会重复下
 
 `execute_pending` 读取提案并落库，幂等键保证同一提案只执行一次。
 
-### 3. 转人工是真挂起
+### 4. 转人工是真挂起
 
 `handoff` 节点调用 LangGraph 的 `interrupt`，图停在那一刻，状态进入 PostgreSQL checkpoint。
 坐席在 8003 工作台回复时调 `resume`，图从断点继续，把坐席消息带给访客。
 服务重启、进程崩溃都不影响——状态不在内存里。
 
-### 4. 三份数据一个库
+### 5. 三份数据一个库
 
 业务表（sessions / messages / tickets / orders）、向量块（kb_chunks）、图状态（checkpoints）都在同一个 PostgreSQL。
 少一套依赖，事务边界清楚，备份只备一个库。
 
-### 5. OpenAI 兼容层
+### 6. OpenAI 兼容层
 
 `/v1/chat/completions` 支持流式，语义与 OpenAI 一致，额外带 `X-SelfDesk-Session` 头复用会话。
 Java 侧只要把 Spring AI 的 `base-url` 指过来，业务代码一行不改就能用上这套编排。
@@ -307,6 +334,7 @@ app/
 ├─ pg.py             连接池与健康检查
 ├─ db.py             会话/消息/工单/订单
 ├─ openai_compat.py  OpenAI 兼容层（含流式）
+├─ validate.py       参数前缀校验（齐全 / 溯源 / 统一错误码）
 ├─ config.py         集中配置
 ├─ static/           访客端与工作台页面
 └─ auth.py           令牌签发与校验（可脱离数据库单测）
@@ -331,14 +359,15 @@ embedding_server.py  本地向量服务（fastembed）
 | 两阶段写操作 | 提案 → 「确认」→ 创建订单并返回单号 |
 | 自带向量服务 | `/health` 与 `/v1/embeddings` 正常返回 512 维向量 |
 | 静态页面 | `/` 与 `/console` 均 200 |
-| 单元测试 | 34 passed（`pytest`） |
+| 参数校验（实机） | 缺单号追问、带单号查询、退款提案、确认执行、重复退款短路，5 条全通 |
+| 单元测试 | 57 passed + 3 db skipped（`pytest`） |
 | CI | GitHub Actions：测试 + 密钥扫描 + 敏感文件检查 |
 
 ## 测试
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                     # 34 个用例，约 0.5 秒，不依赖外部服务
+pytest                     # 60 个用例，约 0.6 秒，不依赖外部服务
 pytest -m db               # 两阶段幂等（需要 SELFDESK_TEST_DSN 指向一个测试库）
 ```
 
@@ -348,6 +377,7 @@ pytest -m db               # 两阶段幂等（需要 SELFDESK_TEST_DSN 指向�
 | `tests/test_chunking.py` | 短文本整条、500 字上限、超长段 80 字重叠、尾块合并 |
 | `tests/test_routing.py` | 意图路由（查单/退款/下单/政策问题不误触）、单号提取边界 |
 | `tests/test_two_phase_db.py` | 同一提案确认两次只落一单；待确认动作流转与过期 |
+| `tests/test_validate.py` | 参数可溯源（含分隔符/短值）、模型参数被篡改时拦下、两个前缀节点的分支与短路 |
 
 CI 里还会额外跑：脚本语法、密钥扫描、敏感文件、README 图片引用。
 
@@ -355,6 +385,7 @@ CI 里还会额外跑：脚本语法、密钥扫描、敏感文件、README 图�
 
 - **单 Agent、单租户**：演示够用，多租户字段已预留（`tenant_id`），但没有做隔离策略。
 - **意图分类是规则**：可解释、可测试，但泛化不如小模型分类器；换行业要改规则。
+- **写操作的单号会回看最近 4 轮对话**：用户接着说「退了吧」会沿用上一轮提到的单号，确认提示里会显示具体订单号，由确认这一步兜底；不想沿用可关掉 `v_refund` 的上下文回退。
 - **只支持 `.md/.txt` 导入**：docx/pdf 需要额外解析，尚未实现。
 - **Embedding 首次启动会下载模型**（约 100MB），之后走本地缓存。
 - **工作台免密只对回环地址**：`/api/auth/local` 在远程访问时返回 403。

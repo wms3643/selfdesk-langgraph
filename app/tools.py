@@ -179,13 +179,13 @@ def account_info(session_id: str) -> dict:
                         f"{p['expires']} 到期，账户余额 ¥{p['balance']}。")}
 
 
-def submit_refund(session_id: str, question: str) -> dict:
+def submit_refund(session_id: str, question: str, order_no: str | None = None) -> dict:
     """写操作第一阶段：只生成待确认提案，绝不直接执行。
 
     设计原则：模型/规则都不能自己决定动钱。必须由用户下一轮明确说「确认」，
     才由图里的 execute 节点真正提交。这样即使模型误判，也不会造成资金损失。
     """
-    order_no = extract_order_no(question)
+    order_no = order_no or extract_order_no(question)
     if not order_no:
         return {"ok": False, "error": "missing_order_no",
                 "message": "申请退款需要订单号，请提供 10~18 位订单号。"}
@@ -390,14 +390,22 @@ def pick_tool(question: str) -> str | None:
     return None
 
 
-def run_tool(name: str, question: str, session_id: str = "") -> dict:
-    """统一执行入口：按名字分发，参数从问题里抽取。"""
+def run_tool(name: str, question: str, session_id: str = "",
+             args: dict | None = None) -> dict:
+    """统一执行入口：按名字分发。
+
+    参数优先用上游校验节点放进 state.tool_args 的值，没有才从问题里抽。
+    这样 v_order / v_refund 校验过的参数不会在执行时被换掉。
+    """
     spec = TOOL_REGISTRY.get(name)
     if not spec:
         return {"ok": False, "error": "unknown_tool", "message": ""}
+    args = args or {}
     if name in ("query_order", "query_refund"):
-        return spec["fn"](extract_order_no(question))
-    if name in ("submit_refund", "create_order"):
+        return spec["fn"](args.get("order_no") or extract_order_no(question))
+    if name == "submit_refund":
+        return spec["fn"](session_id, question, args.get("order_no"))
+    if name == "create_order":
         return spec["fn"](session_id, question)
     if name in ("business_info", "account_info"):
         return spec["fn"](question) if name == "business_info" else spec["fn"](session_id)

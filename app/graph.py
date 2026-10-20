@@ -19,7 +19,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
-from . import db, pg, rag, tools
+from . import db, pg, rag, tools, validate
 from .config import (ESCALATE_ON_LOW_SCORE, LLM_BASE_URL, LLM_MODEL,
                      LLM_TEMPERATURE, RETRIEVE_TOP_K, load_api_key)
 
@@ -33,6 +33,10 @@ CANCEL_WORDS = ("取消", "不要", "算了", "不用了", "撤销", "别退", "
 
 # 只有这些错误才升级人工；其余（缺参数、无工单、内部异常）先引导用户
 TRANSFER_ERRORS = {"not_found"}
+
+# 需要订单号的工具 → 各自的入口校验节点
+ORDER_TOOLS = {"query_order", "query_refund"}
+REFUND_TOOLS = {"submit_refund"}
 
 
 def _is_confirm(text: str) -> bool:
@@ -57,6 +61,8 @@ class ChatState(TypedDict, total=False):
     history: list[dict]
     intent: str
     tool_name: str
+    tool_args: dict
+    tool_args_raw: dict
     pending_action: dict | None
     action_decision: str
     docs: list[dict]
@@ -134,6 +140,51 @@ def retrieve(state: ChatState) -> dict:
                                  state.get("tenant_id") or db.DEFAULT_TENANT)}
 
 
+def v_order(state: ChatState) -> dict:
+    """查单类流程的入口校验：单号有没有、是不是用户真的说过。"""
+    order_no, err = validate.pick_order_no(state)
+    if err == "not_grounded":
+        raw = (state.get("tool_args_raw") or {}).get("order_no", "")
+        return {"tool_args": {},
+                "tool_result": validate.fail("not_grounded", "order_no",
+                                             f"对话里没有出现订单号 {raw}，请确认后再试。")}
+    if not order_no:
+        return {"tool_args": {},
+                "tool_result": validate.fail("missing_arg", "order_no",
+                                             "没有识别到订单号，请提供 10~18 位订单号。")}
+    return {"tool_args": {"order_no": order_no}, "tool_result": None}
+
+
+def v_refund(state: ChatState) -> dict:
+    """退款流程的入口校验：单号 + 订单存在 + 没有已经提交过的退款。
+
+    已退款属于"短路成功"——不用进工具，直接告诉用户结果。
+    """
+    order_no, err = validate.pick_order_no(state)
+    if err == "not_grounded":
+        raw = (state.get("tool_args_raw") or {}).get("order_no", "")
+        return {"tool_args": {},
+                "tool_result": validate.fail("not_grounded", "order_no",
+                                             f"对话里没有出现订单号 {raw}，请确认后再试。")}
+    if not order_no:
+        return {"tool_args": {},
+                "tool_result": validate.fail("missing_arg", "order_no",
+                                             "申请退款需要订单号，请提供 10~18 位订单号。")}
+
+    order = db.get_order(order_no, state.get("tenant_id") or db.DEFAULT_TENANT)
+    if not order:
+        # 不存在与越权共用一句话，避免泄露"这个单号存在但不属于你"
+        return {"tool_args": {"order_no": order_no},
+                "tool_result": validate.fail("not_found", "order_no",
+                                             f"没有查到订单 {order_no}，请核对单号或转人工。")}
+    if order.get("refund"):
+        return {"tool_args": {"order_no": order_no},
+                "tool_result": {"ok": True, "done": True,
+                                "message": (f"订单 {order_no} 已有退款记录："
+                                            f"{order['refund']}，无需重复提交。")}}
+    return {"tool_args": {"order_no": order_no}, "tool_result": None}
+
+
 def call_tool(state: ChatState) -> dict:
     """业务查询：执行 classify 选定的工具，同时检索知识库做兜底。
 
@@ -142,7 +193,8 @@ def call_tool(state: ChatState) -> dict:
     tid = state.get("tenant_id") or db.DEFAULT_TENANT
     q = state["question"]
     name = state.get("tool_name") or tools.pick_tool(q) or ""
-    result = tools.run_tool(name, q, state.get("session_id", ""))
+    result = tools.run_tool(name, q, state.get("session_id", ""),
+                            args=state.get("tool_args"))
     docs = rag.retrieve(q, 3, tid)
     return {"tool_result": result, "docs": docs, "tool_name": name}
 
@@ -255,8 +307,23 @@ def _route_after_classify(state: ChatState) -> str:
     if intent == "human":
         return "handoff"
     if intent == "biz":
+        # 需要参数的流程先过各自的入口校验；无参数的工具直接执行
+        if validate.enabled():
+            name = state.get("tool_name") or ""
+            if name in ORDER_TOOLS:
+                return "v_order"
+            if name in REFUND_TOOLS:
+                return "v_refund"
         return "tool"
     return "retrieve"
+
+
+def _route_after_validate(state: ChatState) -> str:
+    """校验通过进工具，不通过直接去 answer（那里会把 fail 的 message 原样说出）。"""
+    result = state.get("tool_result")
+    if result and (not result.get("ok") or result.get("done")):
+        return "answer"
+    return "call_tool"
 
 
 def _route_after_decide(state: ChatState) -> str:
@@ -270,6 +337,8 @@ def build_graph(checkpointer=None):
     builder.add_node("cancel", cancel_action)
     builder.add_node("classify", classify)
     builder.add_node("retrieve", retrieve)
+    builder.add_node("v_order", v_order)
+    builder.add_node("v_refund", v_refund)
     builder.add_node("call_tool", call_tool)
     builder.add_node("answer", answer)
     builder.add_node("decide", decide)
@@ -279,7 +348,13 @@ def build_graph(checkpointer=None):
     builder.add_conditional_edges("guard", _route_after_guard,
                                   {"classify": "classify", "execute": "execute", "cancel": "cancel"})
     builder.add_conditional_edges("classify", _route_after_classify,
-                                  {"retrieve": "retrieve", "tool": "call_tool", "handoff": "handoff"})
+                                  {"retrieve": "retrieve", "tool": "call_tool",
+                                   "v_order": "v_order", "v_refund": "v_refund",
+                                   "handoff": "handoff"})
+    builder.add_conditional_edges("v_order", _route_after_validate,
+                                  {"call_tool": "call_tool", "answer": "answer"})
+    builder.add_conditional_edges("v_refund", _route_after_validate,
+                                  {"call_tool": "call_tool", "answer": "answer"})
     builder.add_edge("retrieve", "answer")
     builder.add_edge("call_tool", "answer")
     builder.add_edge("answer", "decide")

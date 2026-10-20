@@ -1,5 +1,10 @@
-# 测试所需的最小依赖（不装 langgraph / openai / fastembed，CI 跑得更快）
+# 测试所需依赖（比运行环境少：不装 fastembed，CI 更快）
 pytest>=8.0
 fastapi>=0.110
 pydantic>=2.5
 psycopg[binary,pool]>=3.1
+
+# tests/test_validate.py 需要 import app.graph，因此要图与模型客户端
+langgraph==1.2.16
+langchain-openai==1.7.2
+openai==3.35.1
