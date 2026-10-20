@@ -69,7 +69,7 @@ Open http://127.0.0.1:8003/ and http://127.0.0.1:8003/console
 
 ```bash
 pip install -r requirements-dev.txt
-pytest            # 32 unit tests, ~0.4s, no external services
+pytest            # 34 unit tests, ~0.5s, no external services
 pytest -m db      # two-phase idempotency, requires SELFDESK_TEST_DSN
 ```
 

@@ -1,10 +1,15 @@
 # SelfDesk · LangGraph 智能客服编排层
 
 ![ci](https://github.com/wms3643/selfdesk-langgraph/actions/workflows/ci.yml/badge.svg)
+![license](https://img.shields.io/badge/license-MIT-0E7A68)
+![python](https://img.shields.io/badge/python-3.11%2B-0E7A68)
 
 [English](README.en.md) · 简体中文
 
 把客服 AI 从业务系统里剥出来，做成一个**可独立运行的图编排服务**：意图分流 → 检索增强 → 工具调用 → 两阶段写操作 → 转人工挂起/恢复。
+
+
+> 想先跑起来 → [快速开始](#快速开始)；想看设计取舍 → [核心设计](#核心设计)。
 
 不是「套一层 prompt 的聊天框」：每一步都有明确状态、可回放的 checkpoint，以及可查的证据（意图、命中片段、工具调用、延迟、token）。
 
@@ -23,6 +28,8 @@
 - [HTTP 接口](#http-接口)
 - [业务工具](#业务工具)
 - [目录结构](#目录结构)
+- [验证状态](#验证状态)
+- [测试](#测试)
 - [已知限制](#已知限制)
 
 ---
@@ -251,14 +258,14 @@ embedding_server.py  本地向量服务（fastembed）
 | 两阶段写操作 | 提案 → 「确认」→ 创建订单并返回单号 |
 | 自带向量服务 | `/health` 与 `/v1/embeddings` 正常返回 512 维向量 |
 | 静态页面 | `/` 与 `/console` 均 200 |
-| 单元测试 | 32 passed（`pytest`） |
+| 单元测试 | 34 passed（`pytest`） |
 | CI | GitHub Actions：测试 + 密钥扫描 + 敏感文件检查 |
 
 ## 测试
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                     # 32 个用例，约 0.4 秒，不依赖外部服务
+pytest                     # 34 个用例，约 0.5 秒，不依赖外部服务
 pytest -m db               # 两阶段幂等（需要 SELFDESK_TEST_DSN 指向一个测试库）
 ```
 
