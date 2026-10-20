@@ -123,7 +123,7 @@ curl http://127.0.0.1:8003/v1/chat/completions   -H "Authorization: Bearer any" 
         ┌──────────────────── FastAPI ────────────────────┐
         │                                                │
         │   LangGraph 状态图                              │
-        │   ├─ classify   知识 / 业务 / 人工              │
+        │   ├─ classify   漏斗：规则短路 → 决策模型        │
         │   ├─ v_*        参数入口校验（单号/可退状态）    │
         │   ├─ retrieve   pgvector 检索（bge-small-zh）   │
         │   ├─ tool       8 个业务工具，写操作走两阶段     │
@@ -138,15 +138,42 @@ curl http://127.0.0.1:8003/v1/chat/completions   -H "Authorization: Bearer any" 
 
 ## 核心设计
 
-### 1. 意图先分流，不让模型自由发挥
+### 1. 分诊是漏斗：规则短路 + 决策模型一次给出工具与参数
 
-`classify` 节点用规则把问题分成三类，后面的路径完全不同：
+`classify` 节点分两级，目的只有一个——**别让"选工具"和"抽参数"变成两拨人干**：
 
-- **知识类**（退款政策、发票、用量）→ 检索 + 生成，附带引用片段
-- **业务类**（查订单、退款进度、建工单、下单）→ 调工具，模型只负责组织语言
-- **人工类**（投诉、明确要求转人工、检索分数过低）→ 挂起等人
+```
+第 1 级（零成本）  明确要人工 / 空消息  ──────────────► 直接定 intent
+第 2 级（一次调用） 其余全部交给决策模型 ──► tool_call(name + args) ──► 进 v_* 校验
+```
 
-好处是可测试、可预测：同一句话永远走同一条路径，不会今天答 A 明天答 B。
+决策模型用 function calling，**一次返回工具名和参数**：
+
+```python
+bound = llm.bind_tools(tool_schemas(), tool_choice="auto")   # temperature=0
+resp  = bound.invoke([SystemMessage(DECISION_PROMPT), HumanMessage(q)])
+call  = resp.tool_calls[0]        # {"name": "query_order", "args": {"order_no": "..."}}
+```
+
+三条边界防止"上了模型就放飞"：
+
+| 风险 | 处置 |
+|---|---|
+| 模型编造订单号 | 参数进 `v_*` 做可溯源校验，不在原话里就 `not_grounded` |
+| 模型调不存在的工具 | 工具名不在 `TOOL_REGISTRY` → 直接降级为知识问答 |
+| 模型超时/报错 | 退回关键词规则（`decision_source=fallback`），服务不中断 |
+
+**实测（同一批句子，脚本 `scripts/eval_decision.py`）**
+
+| 指标 | 关键词规则 | 决策模型 |
+|---|---|---|
+| 24 句常见问法 | 22/24 (92%) | **24/24 (100%)** |
+| 8 句留出集（未进提示词） | —— | 7/8 (88%) |
+| 单次决策延迟 | ~0 ms | 中位 842 ms，最慢 1587 ms |
+
+规则那 92% 是"我按这些句子调的"，模型 100% 也含少量拟合成分；**留出集 88% 才是可信数字**。
+规则漏掉的典型是「帮我查下 202610190002 付了多少钱」→ 规则返回知识库，模型正确选 `query_order`。
+代价是每轮多一次模型调用，中位 +0.8 秒。要退回纯规则：`SELFDESK_DECISION=rules`。
 
 ### 2. 参数在流程入口校验，不带病执行
 
@@ -281,6 +308,8 @@ python run.py                       # 主服务 :8003
 | `LLM_BASE_URL` | `https://api.deepseek.com/v1` | 任何 OpenAI 兼容端点 |
 | `LLM_MODEL` | `deepseek-chat` | 模型名 |
 | `LLM_TEMPERATURE` | `0.3` | 生成温度 |
+| `SELFDESK_DECISION` | `model` | `model` 用决策模型分诊；`rules` 退回关键词 |
+| `SELFDESK_ARG_VALIDATE` | `1` | `0` 关闭参数入口校验 |
 | `SELFDESK_PG_DSN` | `host=127.0.0.1 port=5432 dbname=selfdesk user=selfdesk password=selfdesk_local` | 整体覆盖连接串 |
 | `EMBEDDING_URL` | `http://127.0.0.1:8000/v1/embeddings` | 向量服务 |
 | `EMBEDDING_MODEL` | `BAAI/bge-small-zh-v1.5` | 512 维，中文短文本够用且快 |
@@ -335,6 +364,7 @@ app/
 ├─ db.py             会话/消息/工单/订单
 ├─ openai_compat.py  OpenAI 兼容层（含流式）
 ├─ validate.py       参数前缀校验（齐全 / 溯源 / 统一错误码）
+├─ router.py         决策模型（function calling：工具 + 参数一次给出）
 ├─ config.py         集中配置
 ├─ static/           访客端与工作台页面
 └─ auth.py           令牌签发与校验（可脱离数据库单测）
@@ -342,6 +372,7 @@ tests/               单元测试（pytest）
 seed_kb.py           演示知识库
 reindex_kb.py        重建索引（换模型/调切分参数时用）
 embedding_server.py  本地向量服务（fastembed）
+scripts/eval_decision.py  决策模型 vs 关键词规则的对照实验
 ```
 
 ## 验证状态
@@ -360,14 +391,15 @@ embedding_server.py  本地向量服务（fastembed）
 | 自带向量服务 | `/health` 与 `/v1/embeddings` 正常返回 512 维向量 |
 | 静态页面 | `/` 与 `/console` 均 200 |
 | 参数校验（实机） | 缺单号追问、带单号查询、退款提案、确认执行、重复退款短路，5 条全通 |
-| 单元测试 | 57 passed + 3 db skipped（`pytest`） |
+| 决策模型（实机） | 24 句常见问法 24/24；留出集 8 句 7/8；中位 842ms |
+| 单元测试 | 69 passed + 3 db skipped（`pytest`） |
 | CI | GitHub Actions：测试 + 密钥扫描 + 敏感文件检查 |
 
 ## 测试
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                     # 60 个用例，约 0.6 秒，不依赖外部服务
+pytest                     # 72 个用例，约 0.7 秒，不依赖外部服务
 pytest -m db               # 两阶段幂等（需要 SELFDESK_TEST_DSN 指向一个测试库）
 ```
 
@@ -378,13 +410,15 @@ pytest -m db               # 两阶段幂等（需要 SELFDESK_TEST_DSN 指向�
 | `tests/test_routing.py` | 意图路由（查单/退款/下单/政策问题不误触）、单号提取边界 |
 | `tests/test_two_phase_db.py` | 同一提案确认两次只落一单；待确认动作流转与过期 |
 | `tests/test_validate.py` | 参数可溯源（含分隔符/短值）、模型参数被篡改时拦下、两个前缀节点的分支与短路 |
+| `tests/test_router.py` | 漏斗短路（不花模型调用）、tool_call 解析、未知工具降级、模型报错退回规则、编造参数被 `v_order` 拦下 |
 
 CI 里还会额外跑：脚本语法、密钥扫描、敏感文件、README 图片引用。
 
 ## 已知限制
 
 - **单 Agent、单租户**：演示够用，多租户字段已预留（`tenant_id`），但没有做隔离策略。
-- **意图分类是规则**：可解释、可测试，但泛化不如小模型分类器；换行业要改规则。
+- **决策要花一次模型调用**：中位 +0.8 秒，最慢 1.6 秒；对延迟敏感的入口可切 `SELFDESK_DECISION=rules`。
+- **提示词里有 few-shot 示例**：那几句的准确率会被抬高（24 句 100%），真实水平看留出集（88%）。
 - **写操作的单号会回看最近 4 轮对话**：用户接着说「退了吧」会沿用上一轮提到的单号，确认提示里会显示具体订单号，由确认这一步兜底；不想沿用可关掉 `v_refund` 的上下文回退。
 - **只支持 `.md/.txt` 导入**：docx/pdf 需要额外解析，尚未实现。
 - **Embedding 首次启动会下载模型**（约 100MB），之后走本地缓存。

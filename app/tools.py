@@ -216,13 +216,13 @@ def _gen_order_no() -> str:
     raise RuntimeError("订单号空间已满")
 
 
-def create_order(session_id: str, question: str) -> dict:
+def create_order(session_id: str, question: str, product: str | None = None) -> dict:
     """写操作第一阶段：下单 / 续费。
 
     与退款同理，只生成提案、不直接创建订单——下单同样会造成资金动作，
     必须由用户明确确认后才落到第二阶段。
     """
-    product = match_product(question, session_id)
+    product = product or match_product(question, session_id)
     if not product:
         listing = "、".join(f"{k} ¥{v}" for k, v in PRODUCTS.items())
         return {"ok": False, "error": "missing_product",
@@ -406,7 +406,7 @@ def run_tool(name: str, question: str, session_id: str = "",
     if name == "submit_refund":
         return spec["fn"](session_id, question, args.get("order_no"))
     if name == "create_order":
-        return spec["fn"](session_id, question)
+        return spec["fn"](session_id, question, args.get("product"))
     if name in ("business_info", "account_info"):
         return spec["fn"](question) if name == "business_info" else spec["fn"](session_id)
     if name == "query_ticket":

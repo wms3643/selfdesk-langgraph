@@ -19,7 +19,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
-from . import db, pg, rag, tools, validate
+from . import db, pg, rag, router, tools, validate
 from .config import (ESCALATE_ON_LOW_SCORE, LLM_BASE_URL, LLM_MODEL,
                      LLM_TEMPERATURE, RETRIEVE_TOP_K, load_api_key)
 
@@ -63,6 +63,9 @@ class ChatState(TypedDict, total=False):
     tool_name: str
     tool_args: dict
     tool_args_raw: dict
+    decision_source: str
+    decision_ms: int
+    decision_tokens: int
     pending_action: dict | None
     action_decision: str
     docs: list[dict]
@@ -121,18 +124,39 @@ def cancel_action(state: ChatState) -> dict:
 
 
 def classify(state: ChatState) -> dict:
-    """意图识别：规则优先，够用且零延迟。
+    """意图识别 + 参数抽取：漏斗结构。
 
-    工具选择也在这里定下（state.tool_name），后续节点只负责执行，
-    避免「判断走业务」和「决定调哪个工具」用两套关键词表、各自漂移。
+    第 1 级是硬规则（明确要人工、空消息），零成本短路；
+    第 2 级是决策模型，一次返回 tool_call（工具名 + 参数）。
+    结果里的参数是"待校验"状态，由 v_* 前缀节点做可溯源校验后才执行。
+
+    SELFDESK_DECISION=rules 时退回纯关键词规则（旧行为）。
     """
-    q = state["question"]
+    q = state.get("question") or ""
+
+    if router.enabled():
+        out = router.decide(q)
+        merged: dict = {
+            "intent": out.get("intent", "kb"),
+            "decision_source": out.get("decision_source", ""),
+            "decision_ms": int(out.get("decision_ms") or 0),
+            "decision_tokens": int(out.get("tokens") or 0),
+        }
+        if out.get("tool_name"):
+            merged["tool_name"] = out["tool_name"]
+        if out.get("tool_args_raw"):
+            merged["tool_args_raw"] = out["tool_args_raw"]
+        if merged["intent"] == "human":
+            merged["human_reason"] = "用户要求人工"
+        return merged
+
+    # 规则版：关键词命中即定
     if any(w in q for w in HUMAN_WORDS):
-        return {"intent": "human", "human_reason": "用户要求人工"}
+        return {"intent": "human", "human_reason": "用户要求人工", "decision_source": "rule"}
     name = tools.pick_tool(q)
     if name:
-        return {"intent": "biz", "tool_name": name}
-    return {"intent": "kb"}
+        return {"intent": "biz", "tool_name": name, "decision_source": "rule"}
+    return {"intent": "kb", "decision_source": "rule"}
 
 
 def retrieve(state: ChatState) -> dict:
