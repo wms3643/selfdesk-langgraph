@@ -42,9 +42,22 @@ jobs:
       - name: 单元测试
         run: python -m pytest -q
 
+      - name: 等待 PostgreSQL
+        run: |
+          for i in $(seq 1 30); do
+            if pg_isready -h 127.0.0.1 -p 5432 -U selfdesk; then
+              echo "postgres ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "postgres 未就绪"
+          exit 1
+
       - name: 数据库测试（两阶段幂等）
         env:
           SELFDESK_TEST_DSN: host=127.0.0.1 port=5432 dbname=selfdesk_test user=selfdesk password=selfdesk_local
+          SELFDESK_PG_STARTUP_TIMEOUT: "40"
         run: python -m pytest -q -m db
 
       - name: 密钥扫描
