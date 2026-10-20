@@ -125,7 +125,7 @@ curl http://127.0.0.1:8003/v1/chat/completions   -H "Authorization: Bearer any" 
         │   LangGraph 状态图                              │
         │   ├─ classify   知识 / 业务 / 人工              │
         │   ├─ retrieve   pgvector 检索（bge-small-zh）   │
-        │   ├─ tool       9 个业务工具，写操作走两阶段     │
+        │   ├─ tool       8 个业务工具，写操作走两阶段     │
         │   ├─ handoff    interrupt 挂起，等坐席 resume   │
         │   └─ answer     模型生成 + 引用来源             │
         │                                                │
@@ -287,10 +287,13 @@ python run.py                       # 主服务 :8003
 | `business_info` | 营业时间/电话/地址 | 否 |
 | `query_ticket` | 查本会话工单 | 否 |
 | `account_info` | 账号与套餐 | 否 |
-| `match_product` | 匹配产品与价格 | 否 |
-| `create_ticket` | 建工单 | 是（两阶段） |
+| `create_ticket` | 建工单（当前仅由退款流程内部触发） | 是 |
 | `submit_refund` | 提交退款申请 | 是（两阶段） |
 | `create_order` | 创建订单 | 是（两阶段） |
+
+> 共 8 个注册工具，其中 7 个能由 `pick_tool` 的规则直接选中；`create_ticket` 已注册但规则尚未接入，
+> 目前只在 `submit_refund` 内部创建工单时调用。
+> `match_product` 是 `create_order` 内部使用的产品匹配函数，不单独暴露为工具。
 
 ## 目录结构
 
