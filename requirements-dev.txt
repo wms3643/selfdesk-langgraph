@@ -1,0 +1,5 @@
+# 测试所需的最小依赖（不装 langgraph / openai / fastembed，CI 跑得更快）
+pytest>=8.0
+fastapi>=0.110
+pydantic>=2.5
+psycopg[binary,pool]>=3.1

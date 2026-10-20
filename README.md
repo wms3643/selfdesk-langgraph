@@ -2,6 +2,8 @@
 
 ![ci](https://github.com/wms3643/selfdesk-langgraph/actions/workflows/ci.yml/badge.svg)
 
+[English](README.en.md) · 简体中文
+
 把客服 AI 从业务系统里剥出来，做成一个**可独立运行的图编排服务**：意图分流 → 检索增强 → 工具调用 → 两阶段写操作 → 转人工挂起/恢复。
 
 不是「套一层 prompt 的聊天框」：每一步都有明确状态、可回放的 checkpoint，以及可查的证据（意图、命中片段、工具调用、延迟、token）。
@@ -226,7 +228,9 @@ app/
 ├─ db.py             会话/消息/工单/订单
 ├─ openai_compat.py  OpenAI 兼容层（含流式）
 ├─ config.py         集中配置
-└─ static/           访客端与工作台页面
+├─ static/           访客端与工作台页面
+└─ auth.py           令牌签发与校验（可脱离数据库单测）
+tests/               单元测试（pytest）
 seed_kb.py           演示知识库
 reindex_kb.py        重建索引（换模型/调切分参数时用）
 embedding_server.py  本地向量服务（fastembed）
@@ -247,6 +251,25 @@ embedding_server.py  本地向量服务（fastembed）
 | 两阶段写操作 | 提案 → 「确认」→ 创建订单并返回单号 |
 | 自带向量服务 | `/health` 与 `/v1/embeddings` 正常返回 512 维向量 |
 | 静态页面 | `/` 与 `/console` 均 200 |
+| 单元测试 | 32 passed（`pytest`） |
+| CI | GitHub Actions：测试 + 密钥扫描 + 敏感文件检查 |
+
+## 测试
+
+```bash
+pip install -r requirements-dev.txt
+pytest                     # 32 个用例，约 0.4 秒，不依赖外部服务
+pytest -m db               # 两阶段幂等（需要 SELFDESK_TEST_DSN 指向一个测试库）
+```
+
+| 文件 | 覆盖什么 |
+|---|---|
+| `tests/test_auth.py` | 令牌签发、签名被改、过期、换密钥后失效 |
+| `tests/test_chunking.py` | 短文本整条、500 字上限、超长段 80 字重叠、尾块合并 |
+| `tests/test_routing.py` | 意图路由（查单/退款/下单/政策问题不误触）、单号提取边界 |
+| `tests/test_two_phase_db.py` | 同一提案确认两次只落一单；待确认动作流转与过期 |
+
+CI 里还会额外跑：脚本语法、密钥扫描、敏感文件、README 图片引用。
 
 ## 已知限制
 

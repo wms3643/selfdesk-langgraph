@@ -1,18 +1,14 @@
 """HTTP 接口层：访客端、坐席端、知识库、仪表盘。"""
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
 import os
-import secrets
-import time
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from . import db, pg, pg_store, rag, tools
+from .auth import issue_token, parse_token, require_agent
 from .config import STATIC_DIR
 from .graph import Runner
 from .openai_compat import router as compat_router
@@ -21,8 +17,6 @@ app = FastAPI(title="SelfDesk Agent")
 app.include_router(compat_router)
 runner = Runner()
 
-_SECRET = os.environ.get("AGENT_TOKEN_SECRET") or secrets.token_hex(16)
-_TOKEN_TTL = 12 * 3600
 
 # 演示坐席：本机免密登录与种子数据共用同一份，避免两处各写一遍
 DEMO_USERNAME = os.environ.get("SELFDESK_AGENT_USER", "agent@selfdesk.local")
@@ -37,40 +31,6 @@ tools.seed_demo_orders()
 async def _pg_unavailable(request: Request, exc: pg.PgUnavailable):
     """数据库故障返回 503，而不是 500 —— 让调用方知道「可以重试」。"""
     return JSONResponse(status_code=503, content={"detail": str(exc), "retryable": True})
-
-
-# ── 认证 ────────────────────────────────────────────────────
-def issue_token(username: str) -> str:
-    exp = int(time.time()) + _TOKEN_TTL
-    raw = f"{username}.{exp}".encode()
-    sig = hmac.new(_SECRET.encode(), raw, hashlib.sha256).digest()
-    return base64.urlsafe_b64encode(raw + b"." + sig).decode()
-
-
-def parse_token(token: str) -> str | None:
-    try:
-        data = base64.urlsafe_b64decode(token.encode())
-        username, exp, sig = data.rsplit(b".", 2)
-        expected = hmac.new(_SECRET.encode(), username + b"." + exp, hashlib.sha256).digest()
-        if not hmac.compare_digest(sig, expected):
-            return None
-        if int(exp) < time.time():
-            return None
-        return username.decode()
-    except Exception:
-        return None
-
-
-def require_agent(authorization: str = Header(default="")) -> dict:
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="未登录")
-    username = parse_token(authorization[7:])
-    if not username:
-        raise HTTPException(status_code=401, detail="登录已失效")
-    user = db.get_user(username)
-    if not user:
-        raise HTTPException(status_code=401, detail="账号不存在")
-    return user
 
 
 # ── 模型 ────────────────────────────────────────────────────
